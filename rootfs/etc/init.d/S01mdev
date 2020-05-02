@@ -1,0 +1,12 @@
+#!/bin/sh
+
+mdev -s
+
+mkdir -p /dev/pts
+mount devpts /dev/pts -t devpts
+
+mkdir -p /mnt
+mount /dev/mmcblk0 /mnt
+
+mount -t debugfs nodev /sys/kernel/debug
+

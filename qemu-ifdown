@@ -1,0 +1,15 @@
+#!/bin/bash
+
+net_dev=$1
+brd_dev=$2
+tap_dev=$3
+
+brctl delif ${brd_dev} ${tap_dev}
+tunctl -d ${tap_dev}
+ifconfig ${brd_dev} down
+brctl delbr ${brd_dev}
+
+#dhclient -v -r ${net_dev}
+ifconfig ${net_dev} up
+#dhclient -v ${net_dev}
+ifconfig ${net_dev} 192.168.0.23

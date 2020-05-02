@@ -1,0 +1,1 @@
+cmd_/opt/development/qemu-project/linux-4.3-driver/mem_test/mem_test.ko := arm-cortexa9_neon-linux-gnueabihf-ld -EL -r  -T ./scripts/module-common.lds --build-id  -o /opt/development/qemu-project/linux-4.3-driver/mem_test/mem_test.ko /opt/development/qemu-project/linux-4.3-driver/mem_test/mem_test.o /opt/development/qemu-project/linux-4.3-driver/mem_test/mem_test.mod.o

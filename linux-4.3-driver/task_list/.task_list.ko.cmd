@@ -1,0 +1,1 @@
+cmd_/opt/development/qemu-project/linux-4.3-driver/task_list/task_list.ko := arm-cortexa9_neon-linux-gnueabihf-ld -EL -r  -T ./scripts/module-common.lds --build-id  -o /opt/development/qemu-project/linux-4.3-driver/task_list/task_list.ko /opt/development/qemu-project/linux-4.3-driver/task_list/task_list.o /opt/development/qemu-project/linux-4.3-driver/task_list/task_list.mod.o

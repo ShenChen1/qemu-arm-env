@@ -1,0 +1,19 @@
+#!/bin/bash
+
+net_dev=$1
+brd_dev=$2
+tap_dev=$3
+
+brctl addbr ${brd_dev}
+ip addr flush dev ${net_dev}
+brctl addif ${brd_dev} ${net_dev}
+tunctl -t ${tap_dev} -u `whoami`
+brctl addif ${brd_dev} ${tap_dev}
+
+ifconfig ${net_dev} up
+ifconfig ${tap_dev} up
+ifconfig ${brd_dev} up
+
+#dhclient -v -r ${brd_dev}
+#dhclient -v ${brd_dev}
+ifconfig ${brd_dev} 192.168.0.23
