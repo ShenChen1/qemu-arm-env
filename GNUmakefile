@@ -1,7 +1,7 @@
 #
 # GNUmakefile — QEMU AArch64 Development Environment
 #
-# Build pipeline: kernel → rootfs → qemu
+# Build pipeline: build-kernel → build-rootfs → qemu
 #
 # This makefile system follows the structuring conventions
 # recommended by Peter Miller in his excellent paper:
@@ -19,7 +19,6 @@ KERNEL_IMAGE := $(KERNEL_DIR)/arch/arm64/boot/Image
 ROOTFS_IMG   := $(OBJDIR)/rootfs.ext4
 SHARE_DIR    := share
 SCRIPTS_DIR  := scripts
-KERNEL_CONFIG := $(SCRIPTS_DIR)/kernel.config
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Verbosity: 'make V=1' for verbose, 'make V=0' (default) for quiet
@@ -94,7 +93,7 @@ QEMUOPTS     += $(QEMUEXTRA)
 # ═══════════════════════════════════════════════════════════════════════════
 # Phony Targets
 # ═══════════════════════════════════════════════════════════════════════════
-.PHONY: help all kernel build-rootfs qemu qemu-persist qemu-gdb \
+.PHONY: help all build-kernel build-rootfs qemu qemu-persist qemu-gdb \
         gdb ssh pre-qemu clean clean-cache clean-all print-qemu print-gdbport
 
 .DEFAULT_GOAL := help
@@ -108,7 +107,7 @@ help:
 	@echo "  ════════════════════════════════════════════════"
 	@echo ""
 	@echo "  Kernel:"
-	@echo "    make kernel             Build minimal kernel with scripts/kernel.config"
+	@echo "    make build-kernel       Build the minimal kernel"
 	@echo ""
 	@echo "  Rootfs:"
 	@echo "    make build-rootfs       Build rootfs (cached debootstrap, sudo)"
@@ -144,28 +143,15 @@ help:
 # ═══════════════════════════════════════════════════════════════════════════
 # Build All
 # ═══════════════════════════════════════════════════════════════════════════
-all: kernel build-rootfs
+all: build-kernel build-rootfs
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Kernel Targets
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Build from allnoconfig and import only the requested QEMU/debug features.
-kernel: $(KERNEL_CONFIG)
-	@echo "==> Generating minimal arm64 config"
-	cd $(KERNEL_DIR) && ARCH=arm64 CROSS_COMPILE=$(GCCPREFIX) \
-		./scripts/kconfig/merge_config.sh -n /dev/null ../$(KERNEL_CONFIG)
-	@set -e; \
-	for option in VIRTIO_PCI VIRTIO_BLK VIRTIO_NET NET_9P_VIRTIO \
-			9P_FS EXT4_FS SERIAL_AMBA_PL011_CONSOLE IP_PNP_DHCP \
-			BPF_SYSCALL DEBUG_INFO_BTF GDB_SCRIPTS; do \
-		state=`$(KERNEL_DIR)/scripts/config --file $(KERNEL_DIR)/.config --state $$option`; \
-		test "$$state" = y || { echo "ERROR: Required CONFIG_$$option resolved to $$state"; exit 1; }; \
-	done
-	@echo "==> Config stats: $$(grep -c '=y' $(KERNEL_DIR)/.config) built-in, $$(grep -c '=m' $(KERNEL_DIR)/.config) modules"
-	@echo "==> Building kernel Image (jobs=$(KERNEL_JOBS))"
-	$(MAKE) -C $(KERNEL_DIR) ARCH=arm64 CROSS_COMPILE=$(GCCPREFIX) \
-		Image -j$(KERNEL_JOBS)
+build-kernel:
+	KERNEL_DIR=$(KERNEL_DIR) CROSS_COMPILE=$(GCCPREFIX) \
+		KERNEL_JOBS=$(KERNEL_JOBS) $(SCRIPTS_DIR)/build-kernel.sh
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Rootfs Target
@@ -192,7 +178,7 @@ gdb: .gdbinit
 
 # Pre-flight checks
 pre-qemu: .gdbinit
-	@test -f $(KERNEL_IMAGE) || { echo "ERROR: Kernel Image not found. Run 'make kernel' first."; exit 1; }
+	@test -f $(KERNEL_IMAGE) || { echo "ERROR: Kernel Image not found. Run 'make build-kernel' first."; exit 1; }
 	@test -f $(ROOTFS_IMG)   || { echo "ERROR: Rootfs image not found. Run 'make build-rootfs' first."; exit 1; }
 	@test -d $(SHARE_DIR)    || mkdir -p $(SHARE_DIR)
 	@rm -f qemu.pcap
