@@ -1,0 +1,10 @@
+# Generated root filesystem images and caches
+/obj/
+
+# Runtime files
+/.gdbinit
+/qemu.pcap
+
+# Host files shared with the guest
+/share/*
+!/share/.gitkeep
