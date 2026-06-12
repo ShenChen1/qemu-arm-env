@@ -14,6 +14,12 @@
 # =============================================================================
 set -euo pipefail
 
+# ── Utility functions ────────────────────────────────────────────────────────
+err()  { printf 'ERROR: %s\n' "$*" >&2; }
+die()  { err "$@"; exit 1; }
+log()  { printf '==> %s\n' "$*"; }
+warn() { printf 'WARNING: %s\n' "$*" >&2; }
+
 # ── Constants ────────────────────────────────────────────────────────────────
 readonly DEBIAN_SUITE="bookworm"
 # China HTTP mirror for debootstrap (fast, no cert issues)
@@ -25,7 +31,7 @@ readonly APT_MIRROR="http://mirrors.ustc.edu.cn/debian"
 readonly QEMU_USER_BIN="/usr/bin/qemu-aarch64"
 readonly ROOT_PASSWORD="root"
 readonly VM_HOSTNAME="arm64-dev"
-readonly REQUIRED_TOOLS="debootstrap mkfs.ext4"
+readonly -a REQUIRED_TOOLS=(debootstrap mkfs.ext4)
 
 # Cache directory and base tarball path (relative to script caller's cwd)
 readonly CACHE_DIR="obj"
@@ -33,7 +39,7 @@ readonly BASE_TARBALL="${CACHE_DIR}/rootfs-base.tar"
 
 # ── Packages to install inside rootfs ────────────────────────────────────────
 # Core diagnostics and eBPF tooling; no compilers (host-driven workflow)
-readonly INSTALL_PACKAGES=(
+readonly -a INSTALL_PACKAGES=(
     # system essentials
     systemd systemd-sysv dbus udev
     # network
@@ -49,31 +55,24 @@ readonly INSTALL_PACKAGES=(
 )
 
 # ── Argument parsing ────────────────────────────────────────────────────────
-OUTPUT_IMAGE="${1:?Usage: $0 <output_image> [size_mb]}"
+OUTPUT_IMAGE="${1:?Usage: ${BASH_SOURCE[0]} <output_image> [size_mb]}"
 SIZE_MB="${2:-1024}"
 
 # ── Pre-flight checks ───────────────────────────────────────────────────────
 check_prerequisites() {
-    if [[ $EUID -ne 0 ]]; then
-        echo "ERROR: This script must be run as root (use sudo)." >&2
-        exit 1
-    fi
+    (( EUID == 0 )) || die "This script must be run as root (use sudo)."
 
-    for tool in $REQUIRED_TOOLS; do
-        if ! command -v "$tool" &>/dev/null; then
-            echo "ERROR: Required tool '$tool' not found. Install it first." >&2
-            exit 1
-        fi
+    for tool in "${REQUIRED_TOOLS[@]}"; do
+        command -v "$tool" &>/dev/null || \
+            die "Required tool '${tool}' not found. Install it first."
     done
 
-    if [[ ! -x "$QEMU_USER_BIN" ]]; then
-        echo "ERROR: $QEMU_USER_BIN not found. Install qemu-user or qemu-user-static." >&2
-        exit 1
-    fi
+    [[ -x "$QEMU_USER_BIN" ]] || \
+        die "${QEMU_USER_BIN} not found. Install qemu-user or qemu-user-static."
 
     if [[ ! -f /proc/sys/fs/binfmt_misc/qemu-aarch64 ]]; then
-        echo "WARNING: binfmt_misc for qemu-aarch64 not registered." >&2
-        echo "         Foreign chroot may fail. Register it or install qemu-user-binfmt." >&2
+        warn "binfmt_misc for qemu-aarch64 not registered."
+        warn "Foreign chroot may fail. Register it or install qemu-user-binfmt."
     fi
 }
 
@@ -84,20 +83,20 @@ run_debootstrap_cached() {
     local rootfs="$1"
 
     if [[ -f "$BASE_TARBALL" ]]; then
-        echo "==> [CACHE HIT] Extracting base system from ${BASE_TARBALL}"
+        log "[CACHE HIT] Extracting base system from ${BASE_TARBALL}"
         tar xf "$BASE_TARBALL" -C "$rootfs"
         # Ensure qemu-aarch64 is present for chroot operations
         cp "$QEMU_USER_BIN" "${rootfs}/usr/bin/qemu-aarch64"
         return 0
     fi
 
-    echo "==> [CACHE MISS] Running full debootstrap (result will be cached)"
+    log "[CACHE MISS] Running full debootstrap (result will be cached)"
 
     # Try China mirror first, fall back to official on failure
     local mirror="$DEBOOTSTRAP_MIRROR"
     if ! debootstrap --arch=arm64 --foreign --variant=minbase \
             "$DEBIAN_SUITE" "$rootfs" "$mirror" 2>&1; then
-        echo "==> China mirror failed, falling back to official mirror"
+        log "China mirror failed, falling back to official mirror"
         # Clean partial debootstrap
         rm -rf "${rootfs:?}"/*
         mirror="$DEBOOTSTRAP_FALLBACK"
@@ -110,47 +109,46 @@ run_debootstrap_cached() {
     chroot "$rootfs" /debootstrap/debootstrap --second-stage
 
     # Save base system as tarball for future rebuilds
-    echo "==> Caching base system to ${BASE_TARBALL}"
+    log "Caching base system to ${BASE_TARBALL}"
     tar cf "$BASE_TARBALL" -C "$rootfs" .
-    echo "==> Cache saved: $(du -h "$BASE_TARBALL" | cut -f1)"
+    log "Cache saved: $(du -h "$BASE_TARBALL" | cut -f1)"
 }
 
 # ── Build rootfs ─────────────────────────────────────────────────────────────
 build_rootfs() {
-    ROOTFS_BUILD_DIR=$(mktemp -d /tmp/rootfs-build.XXXXXX)
+    ROOTFS_BUILD_DIR=$(mktemp -d)
     local start_time=$SECONDS
 
-    echo "==> [1/6] Creating sparse image: ${OUTPUT_IMAGE} (${SIZE_MB}MB)"
+    log "[1/6] Creating sparse image: ${OUTPUT_IMAGE} (${SIZE_MB}MB)"
     mkdir -p "$CACHE_DIR"
-    dd if=/dev/zero of="$OUTPUT_IMAGE" bs=1M count=0 seek="$SIZE_MB" status=none
+    truncate -s "${SIZE_MB}M" "$OUTPUT_IMAGE"
     mkfs.ext4 -q -F -L rootfs "$OUTPUT_IMAGE"
 
-    echo "==> [2/6] Mounting image"
+    log "[2/6] Mounting image"
     mount -o loop "$OUTPUT_IMAGE" "$ROOTFS_BUILD_DIR"
 
-    echo "==> [3/6] Bootstrapping base system"
+    log "[3/6] Bootstrapping base system"
     run_debootstrap_cached "$ROOTFS_BUILD_DIR"
 
-    echo "==> [4/6] Configuring system"
+    log "[4/6] Configuring system"
     configure_system "$ROOTFS_BUILD_DIR"
 
-    echo "==> [5/6] Installing packages"
+    log "[5/6] Installing packages"
     install_packages "$ROOTFS_BUILD_DIR"
 
-    echo "==> [6/6] Cleaning up rootfs caches"
+    log "[6/6] Cleaning up rootfs caches"
     chroot "$ROOTFS_BUILD_DIR" apt-get clean
     rm -rf "${ROOTFS_BUILD_DIR}/var/lib/apt/lists/"*
     rm -rf "${ROOTFS_BUILD_DIR}/var/cache/apt/"*
     rm -f "${ROOTFS_BUILD_DIR}/usr/bin/qemu-aarch64"
 
-    echo "==> Unmounting"
+    log "Unmounting"
     umount "$ROOTFS_BUILD_DIR"
-    rmdir "$ROOTFS_BUILD_DIR"
-    trap - EXIT
+    rm -rf "$ROOTFS_BUILD_DIR"
     ROOTFS_BUILD_DIR=""
 
     local elapsed=$(( SECONDS - start_time ))
-    echo "==> Done! Rootfs image: ${OUTPUT_IMAGE} (${elapsed}s)"
+    log "Done! Rootfs image: ${OUTPUT_IMAGE} (${elapsed}s)"
     ls -lh "$OUTPUT_IMAGE"
 }
 
@@ -159,14 +157,14 @@ configure_system() {
     local rootfs="$1"
 
     # hostname
-    echo "$VM_HOSTNAME" > "${rootfs}/etc/hostname"
+    printf '%s\n' "$VM_HOSTNAME" > "${rootfs}/etc/hostname"
     cat > "${rootfs}/etc/hosts" <<EOF
 127.0.0.1   localhost
 127.0.1.1   ${VM_HOSTNAME}
 EOF
 
-    # root password
-    chroot "$rootfs" bash -c "echo 'root:${ROOT_PASSWORD}' | chpasswd"
+    # root password (piped via stdin to avoid exposing in process list)
+    printf 'root:%s\n' "${ROOT_PASSWORD}" | chroot "$rootfs" chpasswd
 
     # fstab — rootfs + 9p host share
     cat > "${rootfs}/etc/fstab" <<EOF
@@ -216,7 +214,6 @@ EOF
 # ── Package installation ────────────────────────────────────────────────────
 install_packages() {
     local rootfs="$1"
-    local pkg_list="${INSTALL_PACKAGES[*]}"
 
     # Use host DNS during build (10.0.2.3 only works inside QEMU)
     cp /etc/resolv.conf "${rootfs}/etc/resolv.conf"
@@ -231,7 +228,7 @@ EOF
     export DEBIAN_FRONTEND=noninteractive
 
     chroot "$rootfs" apt-get update -qq
-    chroot "$rootfs" apt-get install -y --no-install-recommends $pkg_list
+    chroot "$rootfs" apt-get install -y --no-install-recommends "${INSTALL_PACKAGES[@]}"
 
     # Restore QEMU user-mode DNS for runtime
     cat > "${rootfs}/etc/resolv.conf" <<EOF
@@ -241,16 +238,24 @@ EOF
 
 # ── Cleanup handler ─────────────────────────────────────────────────────────
 cleanup() {
-    echo "==> Cleaning up on error..."
+    local exit_code=$?
     if [[ -n "${ROOTFS_BUILD_DIR:-}" ]]; then
-        mountpoint -q "$ROOTFS_BUILD_DIR" 2>/dev/null && umount "$ROOTFS_BUILD_DIR"
-        [[ -d "$ROOTFS_BUILD_DIR" ]] && rmdir "$ROOTFS_BUILD_DIR" 2>/dev/null || true
+        warn "Cleaning up (exit_code=${exit_code})..."
+        if mountpoint -q "$ROOTFS_BUILD_DIR" 2>/dev/null; then
+            umount "$ROOTFS_BUILD_DIR" || warn "Failed to unmount ${ROOTFS_BUILD_DIR}"
+        fi
+        rm -rf "$ROOTFS_BUILD_DIR"
+    fi
+    # Remove partial/corrupt image on failure
+    if (( exit_code != 0 )) && [[ -f "${OUTPUT_IMAGE:-}" ]]; then
+        rm -f "$OUTPUT_IMAGE"
+        warn "Removed partial image: ${OUTPUT_IMAGE}"
     fi
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 ROOTFS_BUILD_DIR=""
-trap 'cleanup' EXIT
+trap cleanup EXIT
 
 check_prerequisites
 build_rootfs

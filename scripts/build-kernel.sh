@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+# ── Utility functions ────────────────────────────────────────────────────────
+err()  { printf 'ERROR: %s\n' "$*" >&2; }
+die()  { err "$@"; exit 1; }
+log()  { printf '==> %s\n' "$*"; }
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+readonly REPO_ROOT
 
 KERNEL_DIR="${KERNEL_DIR:-${REPO_ROOT}/linux}"
 KERNEL_CONFIG="${KERNEL_CONFIG:-${SCRIPT_DIR}/kernel.config}"
@@ -20,18 +27,10 @@ fi
 readonly GENERATED_CONFIG="${KERNEL_DIR}/.config"
 
 check_inputs() {
-    [[ -d "${KERNEL_DIR}" ]] || {
-        echo "ERROR: Kernel source not found: ${KERNEL_DIR}" >&2
-        exit 1
-    }
-    [[ -f "${KERNEL_CONFIG}" ]] || {
-        echo "ERROR: Kernel config fragment not found: ${KERNEL_CONFIG}" >&2
-        exit 1
-    }
-    [[ -x "${KERNEL_DIR}/scripts/kconfig/merge_config.sh" ]] || {
-        echo "ERROR: Kernel merge_config.sh is unavailable." >&2
-        exit 1
-    }
+    [[ -d "${KERNEL_DIR}" ]] || die "Kernel source not found: ${KERNEL_DIR}"
+    [[ -f "${KERNEL_CONFIG}" ]] || die "Kernel config fragment not found: ${KERNEL_CONFIG}"
+    [[ -x "${KERNEL_DIR}/scripts/kconfig/merge_config.sh" ]] || \
+        die "Kernel merge_config.sh is unavailable."
 }
 
 config_value() {
@@ -62,16 +61,16 @@ validate_config() {
             continue
         fi
 
-        echo "ERROR: ${option} requested ${expected}, resolved to ${actual}" >&2
-        failures=$((failures + 1))
+        err "${option} requested ${expected}, resolved to ${actual}"
+        (( failures++ ))
     done < "${KERNEL_CONFIG}"
 
-    ((failures == 0)) || exit 1
+    (( failures == 0 )) || exit 1
 }
 
 check_inputs
 
-echo "==> Generating minimal ${ARCH} config from ${KERNEL_CONFIG}"
+log "Generating minimal ${ARCH} config from ${KERNEL_CONFIG}"
 (
     cd "${KERNEL_DIR}"
     ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
@@ -80,6 +79,8 @@ echo "==> Generating minimal ${ARCH} config from ${KERNEL_CONFIG}"
 
 validate_config
 
+# NOTE: Process substitution errors are not caught by set -e.
+# Acceptable here: values are only used for informational output.
 read -r built_in modules < <(
     awk -F= '
         $2 == "y" { built_in++ }
@@ -87,7 +88,7 @@ read -r built_in modules < <(
         END { print built_in + 0, modules + 0 }
     ' "${GENERATED_CONFIG}"
 )
-echo "==> Config stats: ${built_in} built-in, ${modules} modules"
-echo "==> Building kernel Image (jobs=${KERNEL_JOBS})"
+log "Config stats: ${built_in} built-in, ${modules} modules"
+log "Building kernel Image (jobs=${KERNEL_JOBS})"
 make -C "${KERNEL_DIR}" ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" \
     Image -j"${KERNEL_JOBS}"
